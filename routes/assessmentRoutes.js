@@ -1,252 +1,149 @@
-const express = require('express');
+// routes/assessment.js
+const express = require("express");
 const router = express.Router();
-const nodemailer = require('nodemailer');
-const multer = require('multer');
+const nodemailer = require("nodemailer");
+const multer = require("multer");
 
-// Configure multer for file 
+// Configure multer for file upload
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: 10 * 1024 * 1024, // 10MB
   },
   fileFilter: (req, file, cb) => {
-    // Allow only specific file types
-    const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png'];
+    const allowedTypes = [
+      "application/pdf",
+      "application/msword", // .doc
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+      "image/jpeg",
+      "image/jpg",
+      "image/pjpeg", // sometimes browsers send this
+      "image/png",
+      "image/webp", // ✅ allow .webp
+    ];
+
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF, DOC, DOCX, JPG, PNG are allowed.'));
+      console.error("❌ Blocked file type:", file.originalname, file.mimetype);
+      cb(
+        new Error(
+          "Invalid file type. Only PDF, DOC, DOCX, JPG, PNG, WEBP are allowed."
+        ),
+        false
+      );
     }
-  }
+  },
 });
 
-// Create transporter for Gmail
+// ✅ Accept multiple named file fields
+const uploadFields = upload.fields([
+  { name: "passports" },
+  { name: "businessBankStatement" },
+  { name: "personalBankStatement" },
+  { name: "businessRegistration" },
+  { name: "taxpayerCertificate" },
+  { name: "incomeTaxReturns" },
+  { name: "propertyDocuments" },
+  { name: "frcFamily" },
+  { name: "frcParents" },
+  { name: "marriageCertificate" },
+  { name: "invitationLetter" },
+  { name: "flightReservation" },
+  { name: "hotelReservation" },
+  { name: "anyOtherDocuments" },
+  { name: "coverLetter" },
+]);
+
+// Nodemailer transporter
 const createTransporter = () => {
   return nodemailer.createTransport({
-    service: 'gmail',
+    service: "gmail",
     auth: {
       user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
+      pass: process.env.EMAIL_PASS,
+    },
   });
 };
 
-// Route to handle assessment form submissions and send emails
-router.post('/submit-assessment', upload.array('documents', 10), async (req, res) => {
+// Route handler
+router.post("/submit-assessment", uploadFields, async (req, res) => {
   try {
-    const { name, email, phone, destinationCountry, otherCountry, visaType, fromDate, toDate, purpose } = req.body;
-    const files = req.files || [];
+    const {
+      name,
+      email,
+      phone,
+      destinationCountry,
+      otherCountry,
+      visaType,
+      fromDate,
+      toDate,
+      purpose,
+    } = req.body;
 
-    // Validate required fields
+    // Validate required
     if (!name || !email || !destinationCountry || !visaType || !fromDate || !toDate || !purpose) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'All fields are required except phone and documents' 
+      return res.status(400).json({
+        success: false,
+        message: "All required fields must be filled.",
       });
     }
 
-    // Check if email environment variables are set
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      console.error('Missing email environment variables');
       return res.status(500).json({
         success: false,
-        message: 'Assessment service not configured. Please contact administrator.'
+        message:
+          "Assessment service not configured. Missing EMAIL_USER / EMAIL_PASS.",
       });
     }
 
-    // Create transporter
     const transporter = createTransporter();
+    const finalCountry =
+      destinationCountry === "Other" ? otherCountry : destinationCountry;
 
-    // Prepare country name
-    const finalCountry = destinationCountry === 'Other' ? otherCountry : destinationCountry;
-
-    // Generate PDF content (HTML that will be converted to PDF)
-    const pdfHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Visa Assessment Form - ${name}</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
-          .header { text-align: center; border-bottom: 3px solid #013c25; padding-bottom: 20px; margin-bottom: 30px; }
-          .header h1 { color: #013c25; margin: 0; font-size: 28px; }
-          .header .subtitle { color: #666; margin: 10px 0 0 0; }
-          .section { margin: 25px 0; }
-          .section h3 { color: #013c25; border-bottom: 2px solid #013c25; padding-bottom: 8px; margin-bottom: 15px; }
-          .field { margin: 12px 0; }
-          .field strong { color: #333; }
-          .documents-list { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0; }
-          .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; text-align: center; color: #666; font-size: 12px; }
-          .logo { font-size: 24px; color: #013c25; margin-bottom: 10px; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <div class="logo">🎯</div>
-          <h1>Visa Assessment Form</h1>
-          <p class="subtitle">Submitted on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
-        </div>
-        
-        <div class="section">
-          <h3>👤 Personal Information</h3>
-          <div class="field"><strong>Full Name:</strong> ${name}</div>
-          <div class="field"><strong>Email Address:</strong> ${email}</div>
-          <div class="field"><strong>Phone Number:</strong> ${phone || 'Not provided'}</div>
-        </div>
-
-        <div class="section">
-          <h3>🌍 Visa Details</h3>
-          <div class="field"><strong>Destination Country:</strong> ${finalCountry}</div>
-          <div class="field"><strong>Visa Type:</strong> ${visaType}</div>
-          <div class="field"><strong>Travel Date From:</strong> ${fromDate}</div>
-          <div class="field"><strong>Travel Date To:</strong> ${toDate}</div>
-        </div>
-
-        <div class="section">
-          <h3>📝 Purpose of Travel</h3>
-          <p>${purpose}</p>
-        </div>
-
-        <div class="section">
-          <h3>📝 Assessment Notes</h3>
-          <p><strong>Status:</strong> Pending Review</p>
-          <p><strong>Next Action:</strong> Contact applicant within 24 hours</p>
-          <p><strong>Priority:</strong> High</p>
-        </div>
-
-        <div class="footer">
-          <p>This is an official visa assessment form generated by your website</p>
-          <p>Reference ID: ${Date.now()}</p>
-        </div>
-      </body>
-      </html>
-    `;
-
-    // Email content with enhanced styling and Gmail-like design
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_USER, // Send to your own Gmail
-      subject: `🎯 New Visa Assessment Request: ${name}`,
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Visa Assessment Request</title>
-          <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5; }
-            .container { max-width: 600px; margin: 0 auto; background-color: white; }
-            .header { background: linear-gradient(135deg, #013c25 0%, #025c3a 100%); color: white; padding: 30px; text-align: center; }
-            .header h1 { margin: 0; font-size: 28px; font-weight: 600; }
-            .header .subtitle { margin: 10px 0 0 0; opacity: 0.9; font-size: 16px; }
-            .content { padding: 30px; }
-            .section { background-color: #f8f9fa; border-radius: 12px; padding: 20px; margin: 20px 0; border-left: 4px solid #013c25; }
-            .section h3 { color: #013c25; margin: 0 0 15px 0; font-size: 18px; display: flex; align-items: center; }
-            .section h3::before { content: attr(data-icon); margin-right: 10px; font-size: 20px; }
-            .field { margin: 10px 0; }
-            .field strong { color: #333; }
-            .documents-section { background-color: #e8f5e8; border-color: #28a745; }
-            .action-required { background-color: #fff3cd; border-color: #ffc107; }
-            .pdf-section { background-color: #e3f2fd; border-color: #2196f3; }
-            .footer { background-color: #f8f9fa; padding: 20px; text-align: center; color: #666; font-size: 12px; border-top: 1px solid #dee2e6; }
-            .download-btn { display: inline-block; background-color: #013c25; color: white; padding: 8px 16px; text-decoration: none; border-radius: 6px; margin: 5px; font-size: 14px; }
-            .download-btn:hover { background-color: #025c3a; }
-            .pdf-btn { background-color: #2196f3; }
-            .pdf-btn:hover { background-color: #1976d2; }
-            .file-info { background-color: white; border: 1px solid #dee2e6; border-radius: 6px; padding: 10px; margin: 5px 0; }
-            .file-icon { display: inline-block; margin-right: 8px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>🎯 New Visa Assessment Request</h1>
-              <p class="subtitle">A new visa assessment has been submitted from your website</p>
-            </div>
-            
-            <div class="content">
-              <div class="section">
-                <h3 data-icon="👤">Personal Information</h3>
-                <div class="field"><strong>Name:</strong> ${name}</div>
-                <div class="field"><strong>Email:</strong> ${email}</div>
-                <div class="field"><strong>Phone:</strong> ${phone || 'Not provided'}</div>
-              </div>
-
-              <div class="section">
-                <h3 data-icon="🌍">Visa Details</h3>
-                <div class="field"><strong>Destination Country:</strong> ${finalCountry}</div>
-                <div class="field"><strong>Visa Type:</strong> ${visaType}</div>
-                <div class="field"><strong>Travel Period:</strong> ${fromDate} to ${toDate}</div>
-              </div>
-
-              <div class="section">
-                <h3 data-icon="📝">Purpose of Travel</h3>
-                <p style="margin: 0; line-height: 1.6;">${purpose}</p>
-              </div>
-
-
-              <div class="section action-required">
-                <h3 data-icon="⏰">Action Required</h3>
-                <p style="margin: 0; color: #856404; font-weight: 500;">
-                  <strong>Please contact ${name} within 24 hours</strong> to discuss their visa assessment requirements.
-                </p>
-                <p style="margin: 10px 0 0 0; font-size: 14px;">
-                  📧 Reply to: ${email}<br>
-                  📱 Phone: ${phone || 'Not provided'}
-                </p>
-              </div>
-            </div>
-            
-            <div class="footer">
-              <p>This assessment request was submitted on ${new Date().toLocaleString()}</p>
-              <p>📧 Sent from your website contact form</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `,
-      attachments: files.map((file, index) => ({
-        filename: file.originalname,
-        content: file.buffer,
-        contentType: file.mimetype
-      }))
-    };
-
-    // Send email
-    await transporter.sendMail(mailOptions);
-
-    res.status(200).json({
-      success: true,
-      message: 'Assessment request submitted successfully! We will contact you within 24 hours.',
-      pdfDownload: true,
-      pdfData: pdfHtml
+    // Flatten files
+    const files = [];
+    Object.keys(req.files || {}).forEach((field) => {
+      req.files[field].forEach((file) => files.push(file));
     });
 
+    // Email body
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER,
+      subject: `🎯 New Visa Assessment Request: ${name}`,
+      html: `
+        <h2>🎯 New Visa Assessment Request</h2>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Phone:</strong> ${phone || "Not provided"}</p>
+        <p><strong>Destination:</strong> ${finalCountry}</p>
+        <p><strong>Visa Type:</strong> ${visaType}</p>
+        <p><strong>Travel Dates:</strong> ${fromDate} → ${toDate}</p>
+        <p><strong>Purpose:</strong> ${purpose}</p>
+        <hr>
+        <p>📌 Please contact applicant within 24 hours.</p>
+      `,
+      attachments: files.map((file) => ({
+        filename: file.originalname,
+        content: file.buffer,
+        contentType: file.mimetype,
+      })),
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({
+      success: true,
+      message:
+        "Assessment submitted successfully! We will contact you within 24 hours.",
+    });
   } catch (error) {
-    console.error('Assessment submission error:', error);
-    
-    // More detailed error logging
-    if (error.code === 'EAUTH') {
-      console.error('Authentication failed. Check your EMAIL_USER and EMAIL_PASS in .env file');
-      res.status(500).json({
-        success: false,
-        message: 'Assessment service authentication failed. Please check server configuration.'
-      });
-    } else if (error.code === 'ENOTFOUND') {
-      console.error('Gmail server not found. Check your internet connection');
-      res.status(500).json({
-        success: false,
-        message: 'Unable to connect to email server. Please check your connection.'
-      });
-    } else {
-      console.error('Unknown assessment error:', error.message);
-      res.status(500).json({
-        success: false,
-        message: `Assessment submission error: ${error.message}`
-      });
-    }
+    console.error("Assessment error:", error);
+    res.status(500).json({
+      success: false,
+      message: `Error: ${error.message || "Something went wrong"}`,
+    });
   }
 });
 
