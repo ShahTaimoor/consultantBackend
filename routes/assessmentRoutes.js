@@ -123,7 +123,8 @@ router.put("/rename-document/:submissionId/:documentId", async (req, res) => {
     const doc = submission.documents[docIndex];
 
     // Update document fields (Cloudinary URLs remain the same)
-    doc.originalname = newName + (doc.originalname.includes('.') ? doc.originalname.substring(doc.originalname.lastIndexOf('.')) : '');
+    const fileExtension = doc.originalname.split('.').pop();
+    doc.originalname = `${newName.trim()}.${fileExtension}`;
     
     await submission.save();
 
