@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const FormSubmission = require('../models/FormSubmission');
 const nodemailer = require('nodemailer');
+const { deleteFromCloudinary } = require('../middleware/cloudinaryMiddleware');
 
 // Get all form submissions
 router.get('/form-submissions', async (req, res) => {
@@ -119,6 +120,35 @@ router.get('/customer-submission/:email', async (req, res) => {
   } catch (error) {
     console.error('Error fetching customer submission:', error);
     res.status(500).json({ success: false, message: 'Error fetching submission' });
+  }
+});
+
+// Delete submission and all associated files from Cloudinary
+router.delete('/form-submissions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const submission = await FormSubmission.findById(id);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    // Delete all files from Cloudinary
+    if (submission.documents && submission.documents.length > 0) {
+      for (const doc of submission.documents) {
+        if (doc.cloudinaryPublicId) {
+          await deleteFromCloudinary(doc.cloudinaryPublicId);
+        }
+      }
+    }
+
+    // Delete submission from database
+    await FormSubmission.findByIdAndDelete(id);
+
+    res.json({ success: true, message: 'Submission deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting submission:', error);
+    res.status(500).json({ success: false, message: 'Error deleting submission' });
   }
 });
 
