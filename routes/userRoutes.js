@@ -41,11 +41,19 @@ router.post('/signup', async (req, res) => {
 
 // Login
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, name, password } = req.body;
 
   try {
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: 'Invalid email or password' });
+    // Try to find user by email first, then by name
+    let user = await User.findOne({ email });
+    if (!user && name) {
+      user = await User.findOne({ name });
+    }
+    
+    if (!user) {
+      console.log('Login attempt failed - no user found for:', { email, name });
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
 
     // Check if user has password (not Google-only user)
     if (!user.password) {
@@ -53,7 +61,10 @@ router.post('/login', async (req, res) => {
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid email or password' });
+    if (!isMatch) {
+      console.log('Login attempt failed - password mismatch for user:', user.email);
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
 
     user.password = undefined;
 
@@ -72,7 +83,7 @@ router.post('/login', async (req, res) => {
       token,
     });
   } catch (error) {
-    console.error(error);
+    console.error('Login error:', error);
     res.status(500).send('Server error during login');
   }
 });
@@ -191,6 +202,42 @@ router.put('/update-user-role/:userId', isAuthorized, isAdmin, async (req, res) 
   } catch (error) {
     console.error('Update User Role Error:', error);
     return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Create admin user (for initial setup)
+router.post('/create-admin', async (req, res) => {
+  const { name, email, password } = req.body;
+
+  try {
+    // Check if user already exists
+    const existingUser = await User.findOne({ 
+      $or: [{ email }, { name }] 
+    });
+    
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User with this email or name already exists' 
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = await User.create({ 
+      name, 
+      email, 
+      password: hashedPassword,
+      role: 1 // Set as admin
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Admin user created successfully',
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Server error during admin creation');
   }
 });
 

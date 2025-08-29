@@ -2,41 +2,11 @@
 const express = require("express");
 const router = express.Router();
 const nodemailer = require("nodemailer");
-const multer = require("multer");
+const FormSubmission = require('../models/FormSubmission');
+const { upload } = require('../config/cloudinary');
+const { deleteFromCloudinary } = require('../middleware/cloudinaryMiddleware');
 
-// Configure multer for file upload
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
-  },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      "application/pdf",
-      "application/msword", // .doc
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
-      "image/jpeg",
-      "image/jpg",
-      "image/pjpeg", // sometimes browsers send this
-      "image/png",
-      "image/webp", // ✅ allow .webp
-    ];
-
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      console.error("❌ Blocked file type:", file.originalname, file.mimetype);
-      cb(
-        new Error(
-          "Invalid file type. Only PDF, DOC, DOCX, JPG, PNG, WEBP are allowed."
-        ),
-        false
-      );
-    }
-  },
-});
-
-// ✅ Accept multiple named file fields
+// Configure upload fields for Cloudinary
 const uploadFields = upload.fields([
   { name: "passports" },
   { name: "businessBankStatement" },
@@ -55,17 +25,6 @@ const uploadFields = upload.fields([
   { name: "coverLetter" },
 ]);
 
-// Nodemailer transporter
-const createTransporter = () => {
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
-};
-
 // Route handler
 router.post("/submit-assessment", uploadFields, async (req, res) => {
   try {
@@ -81,65 +40,145 @@ router.post("/submit-assessment", uploadFields, async (req, res) => {
       purpose,
     } = req.body;
 
-    // Validate required
-    if (!name || !email || !destinationCountry || !visaType || !fromDate || !toDate || !purpose) {
+    // Validate required fields
+    if (!name || !email || !phone || !destinationCountry || !visaType || !fromDate || !toDate || !purpose) {
       return res.status(400).json({
         success: false,
-        message: "All required fields must be filled.",
+        message: "All fields are required.",
       });
     }
 
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      return res.status(500).json({
-        success: false,
-        message:
-          "Assessment service not configured. Missing EMAIL_USER / EMAIL_PASS.",
+    // Process files from Cloudinary
+    const documents = [];
+    if (req.files) {
+      Object.keys(req.files).forEach((fieldName) => {
+        req.files[fieldName].forEach((file) => {
+          documents.push({
+            fieldName,
+            originalname: file.originalname,
+            filename: file.filename,
+            mimetype: file.mimetype,
+            size: file.size,
+            cloudinaryUrl: file.path, // Cloudinary URL
+            cloudinaryPublicId: file.filename, // Cloudinary public ID
+            cloudinaryId: file.filename, // Cloudinary asset ID
+          });
+        });
       });
     }
 
-    const transporter = createTransporter();
-    const finalCountry =
-      destinationCountry === "Other" ? otherCountry : destinationCountry;
-
-    // Flatten files
-    const files = [];
-    Object.keys(req.files || {}).forEach((field) => {
-      req.files[field].forEach((file) => files.push(file));
+    // Save form submission to database
+    const formSubmission = await FormSubmission.create({
+      name,
+      email,
+      phone,
+      destinationCountry,
+      otherCountry,
+      visaType,
+      fromDate,
+      toDate,
+      purpose,
+      documents,
+      status: 'pending'
     });
-
-    // Email body
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: process.env.EMAIL_USER,
-      subject: `🎯 New Visa Assessment Request: ${name}`,
-      html: `
-        <h2>🎯 New Visa Assessment Request</h2>
-        <p><strong>Name:</strong> ${name}</p>
-        <p><strong>Email:</strong> ${email}</p>
-        <p><strong>Phone:</strong> ${phone || "Not provided"}</p>
-        <p><strong>Destination:</strong> ${finalCountry}</p>
-        <p><strong>Visa Type:</strong> ${visaType}</p>
-        <p><strong>Travel Dates:</strong> ${fromDate} → ${toDate}</p>
-        <p><strong>Purpose:</strong> ${purpose}</p>
-        <hr>
-        <p>📌 Please contact applicant within 24 hours.</p>
-      `,
-      attachments: files.map((file) => ({
-        filename: file.originalname,
-        content: file.buffer,
-        contentType: file.mimetype,
-      })),
-    };
-
-    await transporter.sendMail(mailOptions);
 
     res.json({
       success: true,
-      message:
-        "Assessment submitted successfully! We will contact you within 24 hours.",
+      message: "Assessment submitted successfully! We will contact you within 24 hours.",
+      submissionId: formSubmission._id
     });
   } catch (error) {
     console.error("Assessment error:", error);
+    res.status(500).json({
+      success: false,
+      message: `Error: ${error.message || "Something went wrong"}`,
+    });
+  }
+});
+
+// Rename document in Cloudinary
+router.put("/rename-document/:submissionId/:documentId", async (req, res) => {
+  try {
+    const { submissionId, documentId } = req.params;
+    const { newName } = req.body;
+
+    if (!newName || !newName.trim()) {
+      return res.status(400).json({ success: false, message: "New name is required" });
+    }
+
+    // Find submission
+    const submission = await FormSubmission.findById(submissionId);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: "Submission not found" });
+    }
+
+    // Find document
+    const docIndex = submission.documents.findIndex(
+      (doc) => doc._id.toString() === documentId
+    );
+    if (docIndex === -1) {
+      return res.status(404).json({ success: false, message: "Document not found" });
+    }
+
+    const doc = submission.documents[docIndex];
+
+    // Update document fields (Cloudinary URLs remain the same)
+    const fileExtension = doc.originalname.split('.').pop();
+    doc.originalname = `${newName.trim()}.${fileExtension}`;
+    
+    await submission.save();
+
+    res.json({
+      success: true,
+      message: "Document renamed successfully",
+      document: doc,
+    });
+  } catch (error) {
+    console.error("Rename error:", error);
+    res.status(500).json({
+      success: false,
+      message: `Error: ${error.message || "Something went wrong"}`,
+    });
+  }
+});
+
+// Delete a document from Cloudinary
+router.delete("/delete-document/:submissionId/:documentId", async (req, res) => {
+  try {
+    const { submissionId, documentId } = req.params;
+
+    // Find submission
+    const submission = await FormSubmission.findById(submissionId);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: "Submission not found" });
+    }
+
+    // Find document
+    const docIndex = submission.documents.findIndex(
+      (doc) => doc._id.toString() === documentId
+    );
+    if (docIndex === -1) {
+      return res.status(404).json({ success: false, message: "Document not found" });
+    }
+
+    const doc = submission.documents[docIndex];
+
+    // Delete from Cloudinary if public ID exists
+    if (doc.cloudinaryPublicId) {
+      await deleteFromCloudinary(doc.cloudinaryPublicId);
+    }
+
+    // Remove document from array
+    submission.documents.splice(docIndex, 1);
+    await submission.save();
+
+    res.json({
+      success: true,
+      message: "Document deleted successfully",
+      documentId,
+    });
+  } catch (error) {
+    console.error("Delete error:", error);
     res.status(500).json({
       success: false,
       message: `Error: ${error.message || "Something went wrong"}`,
