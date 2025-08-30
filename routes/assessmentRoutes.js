@@ -122,9 +122,24 @@ router.put("/rename-document/:submissionId/:documentId", async (req, res) => {
 
     const doc = submission.documents[docIndex];
 
-    // Update document fields (Cloudinary URLs remain the same)
-    doc.originalname = newName + (doc.originalname.includes('.') ? doc.originalname.substring(doc.originalname.lastIndexOf('.')) : '');
-    
+    // Rename file on filesystem (uploads folder)
+    const oldPath = path.join(__dirname, "../uploads", doc.filename);
+    const fileExt = path.extname(doc.filename);
+    const newFilename = `${newName.replace(/\s+/g, "_")}-${Date.now()}${fileExt}`;
+    const newPath = path.join(__dirname, "../uploads", newFilename);
+
+    // If file exists, rename on disk
+    if (fs.existsSync(oldPath)) {
+      fs.renameSync(oldPath, newPath);
+    }
+
+    // Update document fields
+    doc.originalname = newName + fileExt; // new display name
+    doc.filename = newFilename; // new file on disk
+    doc.cloudinaryUrl = `/uploads/${newFilename}`;
+    doc.cloudinaryPublicId = newFilename;
+    doc.cloudinaryId = newFilename;
+
     await submission.save();
 
     res.json({
