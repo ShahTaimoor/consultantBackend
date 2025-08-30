@@ -9,13 +9,26 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Configure Cloudinary storage
+// Configure Cloudinary storage with better folder structure
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: {
-    folder: 'visa-assessments', // Folder name in Cloudinary
-    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'pdf', 'doc', 'docx'], // Allowed file formats
-    transformation: [{ width: 1000, height: 1000, crop: 'limit' }], // Optional: resize images
+    folder: 'visa-assessments',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'pdf', 'doc', 'docx'],
+    transformation: [
+      { 
+        width: 1000, 
+        height: 1000, 
+        crop: 'limit',
+        quality: 'auto',
+        fetch_format: 'auto'
+      }
+    ],
+    // Generate unique filenames
+    public_id: (req, file) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      return `${file.fieldname}-${uniqueSuffix}`;
+    },
   },
 });
 
