@@ -1,11 +1,8 @@
-
-
-
 const express = require('express');
 const router = express.Router();
 const FormSubmission = require('../models/FormSubmission');
 const nodemailer = require('nodemailer');
-const { deleteFromCloudinary } = require('../middleware/cloudinaryMiddleware');
+const { deleteFromCloudinary, deleteLocalFile, cleanupFiles } = require('../middleware/cloudinaryMiddleware');
 
 // Get all form submissions
 router.get('/form-submissions', async (req, res) => {
@@ -123,7 +120,7 @@ router.get('/customer-submission/:email', async (req, res) => {
   }
 });
 
-// Delete submission and all associated files from Cloudinary
+// Delete submission and all associated files (both local and cloudinary)
 router.delete('/form-submissions/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -133,13 +130,9 @@ router.delete('/form-submissions/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Submission not found' });
     }
 
-    // Delete all files from Cloudinary
+    // Clean up all files (both local and cloudinary)
     if (submission.documents && submission.documents.length > 0) {
-      for (const doc of submission.documents) {
-        if (doc.cloudinaryPublicId) {
-          await deleteFromCloudinary(doc.cloudinaryPublicId);
-        }
-      }
+      await cleanupFiles(submission.documents);
     }
 
     // Delete submission from database
@@ -149,6 +142,38 @@ router.delete('/form-submissions/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting submission:', error);
     res.status(500).json({ success: false, message: 'Error deleting submission' });
+  }
+});
+
+// Get file URL (works for both local and cloudinary files)
+router.get('/file/:submissionId/:documentId', async (req, res) => {
+  try {
+    const { submissionId, documentId } = req.params;
+
+    const submission = await FormSubmission.findById(submissionId);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    const document = submission.documents.id(documentId);
+    if (!document) {
+      return res.status(404).json({ success: false, message: 'Document not found' });
+    }
+
+    let fileUrl;
+    if (document.uploadType === 'cloudinary' && document.cloudinaryUrl) {
+      fileUrl = document.cloudinaryUrl;
+    } else if (document.uploadType === 'local' && document.localPath) {
+      // For local files, serve them through a static route
+      fileUrl = `/uploads/${document.filename}`;
+    } else {
+      return res.status(404).json({ success: false, message: 'File not found' });
+    }
+
+    res.json({ success: true, fileUrl, document });
+  } catch (error) {
+    console.error('Error getting file URL:', error);
+    res.status(500).json({ success: false, message: 'Error getting file URL' });
   }
 });
 
