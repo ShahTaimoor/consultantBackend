@@ -16,6 +16,43 @@ const {
   cleanupFiles 
 } = require('../middleware/cloudinaryMiddleware');
 
+// Test route to verify PDF upload
+router.post("/test-pdf-upload", uploadFields, async (req, res) => {
+  try {
+    if (!req.files) {
+      return res.status(400).json({
+        success: false,
+        message: "No files uploaded",
+      });
+    }
+
+    const documents = processFiles(req.files, 'cloudinary');
+    
+    // Log file details for debugging
+    documents.forEach(doc => {
+      console.log('File Details:', {
+        originalname: doc.originalname,
+        mimetype: doc.mimetype,
+        cloudinaryUrl: doc.cloudinaryUrl,
+        uploadType: doc.uploadType
+      });
+    });
+
+    res.json({
+      success: true,
+      message: "PDF upload test successful",
+      documents: documents,
+      fileCount: documents.length
+    });
+  } catch (error) {
+    console.error("PDF test error:", error);
+    res.status(500).json({
+      success: false,
+      message: `Error: ${error.message || "Something went wrong"}`,
+    });
+  }
+});
+
 // Route handler for Cloudinary upload
 router.post("/submit-assessment", uploadFields, async (req, res) => {
   try {

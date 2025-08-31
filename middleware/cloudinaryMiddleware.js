@@ -58,10 +58,16 @@ const getThumbnailUrl = (publicId, width = 150, height = 150) => {
 // Middleware to upload single file to Cloudinary
 const uploadSingleToCloudinary = async (file, folder = 'visa-assessments') => {
   try {
-    const result = await cloudinary.uploader.upload(file.path, {
+    // Determine resource type based on file mimetype
+    let resourceType = 'auto';
+    let uploadOptions = {
       folder: folder,
-      resource_type: 'auto',
-      transformation: [
+      resource_type: resourceType,
+    };
+
+    if (file.mimetype.startsWith('image/')) {
+      resourceType = 'image';
+      uploadOptions.transformation = [
         { 
           width: 1000, 
           height: 1000, 
@@ -69,8 +75,14 @@ const uploadSingleToCloudinary = async (file, folder = 'visa-assessments') => {
           quality: 'auto',
           fetch_format: 'auto'
         }
-      ],
-    });
+      ];
+    } else if (file.mimetype === 'application/pdf') {
+      resourceType = 'raw'; // Use 'raw' for PDFs to preserve format
+    }
+
+    uploadOptions.resource_type = resourceType;
+
+    const result = await cloudinary.uploader.upload(file.path, uploadOptions);
     return result;
   } catch (error) {
     console.error('Cloudinary upload error:', error);
@@ -81,10 +93,19 @@ const uploadSingleToCloudinary = async (file, folder = 'visa-assessments') => {
 // Middleware to upload local file to Cloudinary and delete local copy
 const uploadLocalToCloudinary = async (filePath, folder = 'visa-assessments') => {
   try {
-    const result = await cloudinary.uploader.upload(filePath, {
+    // Determine resource type based on file extension
+    const ext = path.extname(filePath).toLowerCase();
+    let resourceType = 'auto';
+    let uploadOptions = {
       folder: folder,
-      resource_type: 'auto',
-      transformation: [
+      resource_type: resourceType,
+    };
+
+    if (ext === '.pdf') {
+      resourceType = 'raw'; // Use 'raw' for PDFs to preserve format
+    } else if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+      resourceType = 'image';
+      uploadOptions.transformation = [
         { 
           width: 1000, 
           height: 1000, 
@@ -92,8 +113,12 @@ const uploadLocalToCloudinary = async (filePath, folder = 'visa-assessments') =>
           quality: 'auto',
           fetch_format: 'auto'
         }
-      ],
-    });
+      ];
+    }
+
+    uploadOptions.resource_type = resourceType;
+
+    const result = await cloudinary.uploader.upload(filePath, uploadOptions);
     
     // Delete local file after successful upload
     await deleteLocalFile(filePath);
