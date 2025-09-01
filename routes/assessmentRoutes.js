@@ -10,7 +10,7 @@ const axios = require('axios');
 const { 
   uploadFields, 
   uploadFieldsLocal, 
-  processFiles,
+  processFiles, 
   uploadLocalToCloudinary 
 } = require('../config/cloudinary');
 const { 
@@ -360,7 +360,7 @@ router.post("/merge-pdfs", async (req, res) => {
     const { width, height } = coverPage.getSize();
     
     // Add cover page content with correct color format
-    coverPage.drawText('Visa Assessment Documents', {
+    coverPage.drawText('Documents Assessment', {
       x: 50,
       y: height - 100,
       size: 24,
@@ -608,6 +608,247 @@ router.post("/merge-pdfs", async (req, res) => {
     res.status(500).json({
       success: false,
       message: `Error: ${error.message || "Something went wrong"}`,
+    });
+  }
+});
+
+// PDF Compression endpoint
+router.post("/compress-pdfs", async (req, res) => {
+  try {
+    const { submissionId, documentIds, compressionLevel, customerName } = req.body;
+
+    // Validate required fields
+    if (!submissionId || !documentIds || !Array.isArray(documentIds) || documentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Submission ID and document IDs are required."
+      });
+    }
+
+    // Find the submission
+    const submission = await FormSubmission.findById(submissionId);
+    if (!submission) {
+      return res.status(404).json({
+        success: false,
+        message: "Submission not found."
+      });
+    }
+
+    // Filter documents to only include PDFs that were requested
+    const documentsToCompress = submission.documents.filter(doc => 
+      documentIds.includes(doc._id.toString()) && 
+      doc.cloudinaryUrl && 
+      doc.mimetype === 'application/pdf'
+    );
+
+    if (documentsToCompress.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid PDF documents found to compress."
+      });
+    }
+
+    // Create a temporary directory for processing
+    const tempDir = path.join(__dirname, '../uploads', `temp_${Date.now()}`);
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const compressedFiles = [];
+    const archiver = require('archiver');
+
+    // Download and compress each PDF
+    for (const doc of documentsToCompress) {
+      try {
+        // Download PDF from Cloudinary
+        const response = await axios({
+          method: 'GET',
+          url: doc.cloudinaryUrl,
+          responseType: 'stream'
+        });
+
+        const tempFilePath = path.join(tempDir, `${doc._id}_${doc.originalname}`);
+        const writeStream = fs.createWriteStream(tempFilePath);
+        
+        response.data.pipe(writeStream);
+
+        await new Promise((resolve, reject) => {
+          writeStream.on('finish', resolve);
+          writeStream.on('error', reject);
+        });
+
+        // Read the PDF file
+        const pdfBytes = fs.readFileSync(tempFilePath);
+        const originalSize = pdfBytes.length;
+        const targetSize = 4.9 * 1024 * 1024; // 4.90 MB target
+        
+        let compressedBytes = pdfBytes;
+        let currentQuality = 1.0;
+        let attempts = 0;
+        const maxAttempts = 5;
+
+        // Smart compression algorithm for files larger than 10MB
+        if (originalSize > 10 * 1024 * 1024) { // 10MB
+          console.log(`File ${doc.originalname} is ${(originalSize / 1024 / 1024).toFixed(2)}MB, applying smart compression...`);
+          
+          while (compressedBytes.length > targetSize && attempts < maxAttempts) {
+            attempts++;
+            
+            try {
+              const pdfDoc = await PDFLibDocument.load(compressedBytes);
+              
+              // Calculate compression ratio based on current size vs target
+              const compressionRatio = Math.min(0.9, targetSize / compressedBytes.length);
+              currentQuality = Math.max(0.3, currentQuality * compressionRatio);
+              
+              // Apply progressive compression settings
+              const compressionOptions = {
+                useObjectStreams: true,
+                addDefaultPage: false,
+                objectsPerTick: 20,
+                updateFieldAppearances: false,
+                // Advanced compression settings
+                compress: true,
+                // Reduce image quality progressively
+                imageQuality: Math.max(0.5, currentQuality),
+                // Optimize text and vector graphics
+                optimizeScans: true,
+                // Remove metadata if needed
+                removeMetadata: attempts > 2
+              };
+              
+              compressedBytes = await pdfDoc.save(compressionOptions);
+              
+              console.log(`Attempt ${attempts}: Compressed to ${(compressedBytes.length / 1024 / 1024).toFixed(2)}MB (Quality: ${(currentQuality * 100).toFixed(1)}%)`);
+              
+              // If we're close to target, break early
+              if (compressedBytes.length <= targetSize * 1.1) {
+                break;
+              }
+              
+            } catch (compressionError) {
+              console.error(`Compression attempt ${attempts} failed:`, compressionError);
+              break;
+            }
+          }
+        } else {
+          // For smaller files, use standard compression based on user preference
+          const pdfDoc = await PDFLibDocument.load(pdfBytes);
+          
+          let quality;
+          switch (compressionLevel) {
+            case 'low':
+              quality = 0.8;
+              break;
+            case 'medium':
+              quality = 0.6;
+              break;
+            case 'high':
+              quality = 0.4;
+              break;
+            default:
+              quality = 0.6;
+          }
+
+          compressedBytes = await pdfDoc.save({
+            useObjectStreams: true,
+            addDefaultPage: false,
+            objectsPerTick: 20,
+            updateFieldAppearances: false,
+            compress: true,
+            imageQuality: quality
+          });
+        }
+
+        // Save compressed file
+        const compressedPath = path.join(tempDir, `compressed_${doc._id}_${doc.originalname}`);
+        fs.writeFileSync(compressedPath, compressedBytes);
+        
+        const compressionRatio = ((originalSize - compressedBytes.length) / originalSize * 100).toFixed(1);
+        
+        compressedFiles.push({
+          path: compressedPath,
+          filename: `compressed_${doc.originalname}`,
+          originalSize: originalSize,
+          compressedSize: compressedBytes.length,
+          compressionRatio: compressionRatio,
+          quality: (currentQuality * 100).toFixed(1)
+        });
+
+        console.log(`File ${doc.originalname}: ${(originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressedBytes.length / 1024 / 1024).toFixed(2)}MB (${compressionRatio}% reduction)`);
+
+        // Clean up temporary download
+        fs.unlinkSync(tempFilePath);
+
+      } catch (error) {
+        console.error(`Error processing document ${doc.originalname}:`, error);
+        // Continue with other documents
+      }
+    }
+
+    if (compressedFiles.length === 0) {
+      // Clean up temp directory
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return res.status(500).json({
+        success: false,
+        message: "Failed to compress any documents."
+      });
+    }
+
+    // Create ZIP file with compressed PDFs
+    const zipPath = path.join(tempDir, `${customerName || 'compressed'}_pdfs.zip`);
+    const output = fs.createWriteStream(zipPath);
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression for ZIP
+    });
+
+    output.on('close', () => {
+      // Set headers for ZIP download
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${customerName || 'compressed'}_pdfs.zip"`);
+      
+      // Send the ZIP file
+      res.download(zipPath, `${customerName || 'compressed'}_pdfs.zip`, (err) => {
+        if (err) {
+          console.error('Error sending ZIP file:', err);
+        }
+        // Clean up temporary files
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch (cleanupErr) {
+          console.error('Error cleaning up temp files:', cleanupErr);
+        }
+      });
+    });
+
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      res.status(500).json({
+        success: false,
+        message: "Error creating ZIP file."
+      });
+      // Clean up
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        console.error('Error cleaning up temp files:', cleanupErr);
+      }
+    });
+
+    archive.pipe(output);
+
+    // Add compressed files to archive
+    compressedFiles.forEach(file => {
+      archive.file(file.path, { name: file.filename });
+    });
+
+    archive.finalize();
+
+  } catch (error) {
+    console.error("PDF compression error:", error);
+    res.status(500).json({
+      success: false,
+      message: `Error: ${error.message || "Something went wrong"}`
     });
   }
 });
